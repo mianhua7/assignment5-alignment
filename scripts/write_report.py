@@ -4,12 +4,12 @@ from datasets import load_dataset
 import random
 import os
 import numpy as np
+from pathlib import Path
 
 # read results from exps/math_baseline/gsm8k_results.jsonl
 ds = load_dataset("json", data_files={"results": "exps/math_baseline/gsm8k_results.jsonl"})["results"]
-parent_dir = os.path.dirname(os.path.abspath(__file__))
-out_path = Path(parent_dir) / "report" / "report.md"
-os.makedirs(out_path.parent, exist_ok=True)
+out_path = Path(__file__).parent.parent / "report" / "report.md"
+out_path.parent.mkdir(parents=True, exist_ok=True)
 
 lines = []
 lines.append(f"# CS336 Assignment 5 Report\n")
