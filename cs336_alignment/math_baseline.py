@@ -82,8 +82,8 @@ if __name__ == "__main__":
     print(formatted_dataset["test"])
     print(formatted_dataset["test"][0])
 
-    prompts = formatted_dataset["test"]["prompt"][:5]
-    answers = formatted_dataset["test"]["answer"][:5]
+    prompts = formatted_dataset["test"]["prompt"]
+    answers = formatted_dataset["test"]["answer"]
 
     # load eval sampling params
     eval_sampling_params = SamplingParams(temperature=1.0, top_p=1.0, max_tokens=1024)

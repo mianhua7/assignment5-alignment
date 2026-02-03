@@ -34,11 +34,13 @@ lines.append(f"| format_reward_1_answer_reward_0 | {np.mean(format_rewards * (1 
 lines.append(f"| format_reward_0_answer_reward_0 | {np.mean((1 - format_rewards) * (1 - answer_rewards))} |\n\n")
 
 # show 10 examples with format_reward = 0
-lines.append("## Examples with format_reward = 0\n")
-lines.append("| prompt | model_completion |\n|---|---|\n")
+lines.append("### Examples with format_reward = 0\n")
+lines.append("Below are 10 examples with format_reward = 0. Clearly the model did not follow the format instructions.\n")
 ds_filtered = ds.filter(lambda x: x["format_reward"] == 0)
-for result in random.sample(list(ds_filtered), min(10, len(ds_filtered))):
-    lines.append(f"| {result['prompt']} | {result['model_completion']} |\n")
+samples = random.sample(list(ds_filtered), min(10, len(ds_filtered)))   
+for i, sample in enumerate(samples):
+    print(sample)
+    lines.append("````text\n" + f"Example {i}:\n" + sample["model_completion"] + "\n````\n")
 
 out_path.write_text("".join(lines), encoding="utf-8")
 print(f"Report saved to {out_path}")
