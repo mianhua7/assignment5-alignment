@@ -68,8 +68,10 @@ def evaluate_vllm(
     return results
 
 if __name__ == "__main__":
-    # load model
-    vllm_model = LLM(model="Qwen/Qwen2.5-Math-1.5B", trust_remote_code=True)
+    # load model from local path
+    parent_dir = Path(__file__).resolve().parent.parent
+    model_path = f"{parent_dir}/models/Qwen2.5-Math-1.5B"
+    vllm_model = LLM(model=model_path, trust_remote_code=True)
     # load dataset, ../data/gsm8k/test.jsonl
     parent_dir = Path(__file__).resolve().parent.parent
     print(parent_dir)
