@@ -22,16 +22,10 @@ def to_r1_zero(example):
     else:
         reasoning = ""
         final = a
-
     prompt = prompt_prefix.format(question=q)
-
     # build the exact model completion as a separate field
-    completion = (
-        (reasoning + "</think>" if reasoning else "")
-        + "<answer>"
-        + final
-        + "</answer>"
-    )
+    completion = "{reasoning} </think> <answer> {final} </answer>".format(reasoning=reasoning, final=final)
+    print(completion)
     return {
         "prompt": prompt,
         "reasoning": reasoning,
@@ -68,25 +62,28 @@ def evaluate_vllm(
     return results
 
 if __name__ == "__main__":
-    # load model from local path
-    parent_dir = Path(__file__).resolve().parent.parent
-    model_path = f"{parent_dir}/models/Qwen2.5-Math-1.5B"
-    vllm_model = LLM(model=model_path, trust_remote_code=True)
     # load dataset, ../data/gsm8k/test.jsonl
     parent_dir = Path(__file__).resolve().parent.parent
-    print(parent_dir)
     dataset = load_dataset("json", data_files={"test": f"{parent_dir}/data/gsm8k/test.jsonl"})
 
     # format dataset as string prompts to the language model using the r1_zero prompt format
     formatted_dataset = dataset.map(to_r1_zero, remove_columns=dataset["test"].column_names)
 
-    print(type(formatted_dataset))
-    print(formatted_dataset["test"])
-    print(formatted_dataset["test"][0])
-
     prompts = formatted_dataset["test"]["prompt"]
     answers = formatted_dataset["test"]["answer"]
+    completions = formatted_dataset["test"]["completion"]
+    # sanity check that the completions are correct
+    rewards = r1_zero_reward_fn(completions[0], answers[0])
+    print(rewards)
+    if rewards["reward"] == 0:
+        print("Sanity check failed")
+        exit(1)
 
+    # load model from local path
+    parent_dir = Path(__file__).resolve().parent.parent
+    model_path = f"{parent_dir}/models/Qwen2.5-Math-1.5B"
+    vllm_model = LLM(model=model_path, trust_remote_code=True)
+    
     # load eval sampling params
     eval_sampling_params = SamplingParams(temperature=1.0, top_p=1.0, max_tokens=1024)
     # evaluate vllm
