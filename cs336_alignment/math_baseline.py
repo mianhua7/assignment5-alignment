@@ -8,15 +8,15 @@ import regex as re
 from tqdm import tqdm 
 from pathlib import Path
 
+
 def to_r1_zero(example):
     current_dir = Path(__file__).resolve().parent
     with open(f"{current_dir}/prompts/r1_zero.prompt", "r") as f:
         prompt_prefix = f.read()
     q = example["question"].strip()
     a = example["answer"].strip()
-    # Split on "####" 
-    if "####" in a:
-        reasoning, final = a.split("####", 1)
+    if "\n####" in a:
+        reasoning, final = a.rsplit("\n####", 1) # split on last \n####
         reasoning = reasoning.strip()
         final = final.strip()
     else:
@@ -24,8 +24,7 @@ def to_r1_zero(example):
         final = a
     prompt = prompt_prefix.format(question=q)
     # build the exact model completion as a separate field
-    completion = "{reasoning} </think> <answer> {final} </answer>".format(reasoning=reasoning, final=final)
-    print(completion)
+    completion = "{reasoning}</think> <answer>{final}</answer>".format(reasoning=reasoning, final=final)
     return {
         "prompt": prompt,
         "reasoning": reasoning,
