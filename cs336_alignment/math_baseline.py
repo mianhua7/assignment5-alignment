@@ -1,36 +1,13 @@
 from datasets import load_dataset
 from vllm import LLM, SamplingParams
 from cs336_alignment.drgrpo_grader import r1_zero_reward_fn
+from cs336_alignment.sft_helpers import to_r1_zero
 from typing import Callable, List
 import json
 import os
 import regex as re
 from tqdm import tqdm 
 from pathlib import Path
-
-
-def to_r1_zero(example):
-    current_dir = Path(__file__).resolve().parent
-    with open(f"{current_dir}/prompts/r1_zero.prompt", "r") as f:
-        prompt_prefix = f.read()
-    q = example["question"].strip()
-    a = example["answer"].strip()
-    if "\n####" in a:
-        reasoning, final = a.rsplit("\n####", 1) # split on last \n####
-        reasoning = reasoning.strip()
-        final = final.strip()
-    else:
-        reasoning = ""
-        final = a
-    prompt = prompt_prefix.format(question=q)
-    # build the exact model completion as a separate field
-    completion = "{reasoning}</think> <answer>{final}</answer>".format(reasoning=reasoning, final=final)
-    return {
-        "prompt": prompt,
-        "reasoning": reasoning,
-        "answer": final,
-        "completion": completion, 
-    }
 
 def evaluate_vllm(
     vllm_model: LLM,

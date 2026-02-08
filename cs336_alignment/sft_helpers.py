@@ -9,6 +9,30 @@ from unittest.mock import patch
 from vllm.model_executor import set_random_seed as vllm_set_random_seed
 import numpy as np
 import torch.nn.functional as F
+from pathlib import Path
+
+def to_r1_zero(example):
+    current_dir = Path(__file__).resolve().parent
+    with open(f"{current_dir}/prompts/r1_zero.prompt", "r") as f:
+        prompt_prefix = f.read()
+    q = example["question"].strip()
+    a = example["answer"].strip()
+    if "\n####" in a:
+        reasoning, final = a.rsplit("\n####", 1) # split on last \n####
+        reasoning = reasoning.strip()
+        final = final.strip()
+    else:
+        reasoning = ""
+        final = a
+    prompt = prompt_prefix.format(question=q)
+    # build the exact model completion as a separate field
+    completion = "{reasoning} </think> <answer> {final} </answer>".format(reasoning=reasoning, final=final)
+    return {
+        "prompt": prompt,
+        "reasoning": reasoning,
+        "answer": final,
+        "completion": completion, 
+    }
 
 def tokenize_prompt_and_output(
     prompt_strs: list[str],
@@ -112,9 +136,11 @@ def get_response_log_probs(
     log_probs = F.log_softmax(logits, dim=-1)
     response_log_probs = log_probs.gather(dim=-1, index=labels.unsqueeze(-1)).squeeze(-1)
     if return_token_entropy:
+        with torch.no_grad():
+            token_entropy = compute_entropy(logits)
         return {
             "log_probs": response_log_probs,
-            "token_entropy": compute_entropy(logits),
+            "token_entropy": token_entropy,
         }
     else:
         return {
@@ -192,7 +218,7 @@ def log_generations(
         - ground_truth_answer: str, the ground truth answer.
         - reward_info: Dict[str, float], the reward information.
         - average_token_entropy: float, the average token entropy.
-        - average_response_log_prob: float, the average response log probability.
+        - average_response_length: float, the average response length
     """
     model_responses = llm.generate(input_prompts, eval_sampling_params)
     if include_token_entropy:
@@ -206,6 +232,7 @@ def log_generations(
             for i in np.arange(0, len(input_prompts), batch_size):
                 logits = model(input_ids[i:i+batch_size].to(model.device)).logits
                 token_entropy = compute_entropy(logits).cpu()
+                # average token entropy per sequence
                 average_token_entropy_list[i:i+batch_size] = (token_entropy * response_mask[i:i+batch_size]).sum(dim=-1) / response_mask[i:i+batch_size].sum(dim=-1)
         model.train()
     else:
@@ -233,6 +260,8 @@ def log_generations(
         "average_answer_reward": float(np.mean([log_info["answer_reward"] for log_info in log_infos])),
         "average_reward": float(np.mean([log_info["reward"] for log_info in log_infos])),
         "average_response_length": float(np.mean([log_info["response_length"] for log_info in log_infos])),
+        "average_response_length_correct": float(np.mean([log_info["response_length"] for log_info in log_infos if log_info["reward"] == 1])),
+        "average_response_length_incorrect": float(np.mean([log_info["response_length"] for log_info in log_infos if log_info["reward"] == 0])),
         "average_token_entropy": float(np.mean([log_info["average_token_entropy"] for log_info in log_infos])),
     }
     with xopen(output_path, "w") as f:
@@ -299,3 +328,17 @@ def gradient_clipping(
     Clip the gradients of the policy.
     """
     torch.nn.utils.clip_grad_norm_(policy.parameters(), max_grad_norm)
+
+def cuda_mem_snapshot(device: str | int = 0):
+    dev = torch.device(device) if isinstance(device, str) else torch.device(f"cuda:{device}")
+
+    torch.cuda.synchronize(dev)
+    allocated = torch.cuda.memory_allocated(dev)
+    reserved  = torch.cuda.memory_reserved(dev)
+    free, total = torch.cuda.mem_get_info(dev)  # bytes
+
+    print(f"CUDA memory snapshot on {dev}:")
+    print(f"  allocated: {allocated / 1024**3:.2f} GiB")
+    print(f"  reserved : {reserved  / 1024**3:.2f} GiB")
+    print(f"  free     : {free      / 1024**3:.2f} GiB")
+    print(f"  total    : {total     / 1024**3:.2f} GiB")
