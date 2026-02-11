@@ -3,34 +3,16 @@ import argparse
 import torch
 import wandb
 from pathlib import Path
-from datasets import load_dataset
-from torch.utils.data import DataLoader
-from transformers import AutoTokenizer, AutoModelForCausalLM, get_scheduler
+from transformers import AutoTokenizer, AutoModelForCausalLM
 import cs336_alignment.sft_helpers as sft_helpers
 from cs336_alignment.drgrpo_grader import r1_zero_reward_fn
 from vllm import SamplingParams
-
 from contextlib import nullcontext
-
-def load_gsm8k_dataset(max_train_samples, max_eval_samples, seed):
-    parent_dir = Path(__file__).resolve().parent.parent
-    ds = load_dataset(f"{parent_dir}/data/gsm8k")
-    ds = ds.map(sft_helpers.to_r1_zero, remove_columns=ds["train"].column_names)
-    if max_train_samples is not None:
-        train_ds = ds["train"].shuffle(seed=seed).select(range(max_train_samples))
-        print(train_ds)
-    else:
-        train_ds = ds["train"]
-    if max_eval_samples is not None:
-        valid_ds = ds["test"].shuffle(seed=seed).select(range(max_eval_samples))
-    else:
-        valid_ds = ds["test"]
-    return train_ds, valid_ds
 
 def main(args):
     torch.manual_seed(args.seed)
     # load dataset and construct dataloaders
-    train_ds, valid_ds = load_gsm8k_dataset(args.max_train_samples, args.max_eval_samples, args.seed)
+    train_ds, valid_ds = sft_helpers.load_gsm8k_dataset(args.max_train_samples, args.max_eval_samples, args.seed)
     print("Loaded train and valid datasets")
     # load model and tokenizer
     device_train = "cuda:1" 
@@ -53,14 +35,6 @@ def main(args):
 
     # initialize optimizer
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate)#, betas=(0.9, 0.95), weight_decay=0.01)
-    '''
-    scheduler = get_scheduler(
-        "cosine",
-        optimizer, 
-        num_warmup_steps=10, 
-        num_training_steps=max_sft_steps // args.gradient_accumulation_steps,
-    )
-    '''
     eval_sampling_params = SamplingParams(
         temperature=1.0,
         top_p=1.0,
@@ -93,13 +67,10 @@ def main(args):
                 tokenized_data = sft_helpers.tokenize_prompt_and_output(list(batch["prompt"]), list(batch["completion"]), tokenizer)
                 input_ids, labels, response_mask = tokenized_data["input_ids"].to(device_train), tokenized_data["labels"].to(device_train), tokenized_data["response_mask"].to(device_train)
                 policy_log_probs = sft_helpers.get_response_log_probs(model, input_ids, labels)['log_probs']
-                #average_response_length = response_mask.sum(dim=-1).float().mean().item()
-                loss, _ = sft_helpers.sft_microbatch_train_step(policy_log_probs, response_mask, 
-                    args.gradient_accumulation_steps)#, normalize_constant=average_response_length)
+                loss, _ = sft_helpers.sft_microbatch_train_step(policy_log_probs, response_mask, args.gradient_accumulation_steps)
                 loss_for_logging += loss.item()
                 if step % args.gradient_accumulation_steps == 0:
-                    #scheduler.step()
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
                     optimizer.step()
                     optimizer.zero_grad(set_to_none=True)
             if step % args.gradient_accumulation_steps == 0:

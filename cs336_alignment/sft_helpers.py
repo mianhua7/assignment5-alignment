@@ -1,3 +1,4 @@
+# sft_helpers.py
 import torch
 from transformers import PreTrainedTokenizer, PreTrainedModel
 from vllm import LLM, SamplingParams
@@ -10,6 +11,7 @@ from vllm.model_executor import set_random_seed as vllm_set_random_seed
 import numpy as np
 import torch.nn.functional as F
 from pathlib import Path
+from datasets import load_dataset
 
 def to_r1_zero(example):
     current_dir = Path(__file__).resolve().parent
@@ -33,67 +35,55 @@ def to_r1_zero(example):
         "answer": final,
         "completion": completion, 
     }
+    
+def load_gsm8k_dataset(max_train_samples, max_eval_samples, seed):
+    parent_dir = Path(__file__).resolve().parent.parent
+    ds = load_dataset(f"{parent_dir}/data/gsm8k")
+    ds = ds.map(to_r1_zero, remove_columns=ds["train"].column_names)
+    if max_train_samples is not None:
+        train_ds = ds["train"].shuffle(seed=seed).select(range(max_train_samples))
+        print(train_ds)
+    else:
+        train_ds = ds["train"]
+    if max_eval_samples is not None:
+        valid_ds = ds["test"].shuffle(seed=seed).select(range(max_eval_samples))
+    else:
+        valid_ds = ds["test"]
+    return train_ds, valid_ds
 
 def tokenize_prompt_and_output(
     prompt_strs: list[str],
     output_strs: list[str],
     tokenizer: PreTrainedTokenizer,
 ) -> dict[str, torch.Tensor]:
-    """Tokenize the prompt and output strings, and construct a mask that is 1 for the 
-    response tokens and 0 for other tokens (prompt or padding).
-    
-    Args:
-        prompt_strs: List of prompt strings.
-        output_strs: List of output strings.
-        tokenizer: Tokenizer to use for tokenization.
-        
-    Returns:
-        Dictionary containing the tokenized prompt and output strings, and a mask that 
-        is 1 for the response tokens and 0 for other tokens (prompt or padding).
     """
-    prompt_tokens = tokenizer(prompt_strs, return_tensors="pt", padding=True, truncation=False)
-    output_tokens = tokenizer(output_strs, return_tensors="pt", padding=True, truncation=False)
-    
-    # Calculate max length needed (sum of actual tokens, not padding)
-    max_length = max(
-        p_mask.sum().item() + o_mask.sum().item() 
-        for p_mask, o_mask in zip(prompt_tokens['attention_mask'], output_tokens['attention_mask'])
-    )
-    
-    tokenized_data = {
-        "input_ids": [],
-        "labels": [],
-        "response_mask": [],
-    }
-    
-    for p_ids, p_mask, o_ids, o_mask in zip(
-        prompt_tokens['input_ids'], 
-        prompt_tokens['attention_mask'], 
-        output_tokens['input_ids'], 
-        output_tokens['attention_mask']
-    ):
-        # Extract actual tokens (without padding) and convert to list
-        p_ids_list = p_ids[p_mask.bool()]
-        o_ids_list = o_ids[o_mask.bool()]
-        # Concatenate prompt and output
-        full_ids = torch.cat([p_ids_list, o_ids_list])
-        # Initialize with padding tokens
-        input_ids = full_ids.new_full((max_length - 1, ), tokenizer.pad_token_id)
-        labels = full_ids.new_full((max_length - 1, ), tokenizer.pad_token_id)
-        response_mask = full_ids.new_full((max_length - 1, ), False)
-        # Copy prompt and output tokens (shifted for next-token prediction)
-        if len(full_ids) < max_length:
-            input_ids[:len(full_ids)] = full_ids
-        else:
-            input_ids[:len(full_ids) - 1] = full_ids[:-1]
-        labels[:len(full_ids) - 1] = full_ids[1:]
-        # Set response_mask to 1 for output tokens (shifted by 1)
-        response_mask[len(p_ids_list) - 1:len(full_ids) - 1] = True
-        tokenized_data["input_ids"].append(input_ids)
-        tokenized_data["labels"].append(labels)
-        tokenized_data["response_mask"].append(response_mask)
+    Tokenize the prompt and output strings, and construct a mask that is 1 for the 
+    response tokens and 0 for other tokens (prompt or padding).
+    """
+    prompt_lens = []
+    full_text_tokens = []
+    for prompt_str, output_str in zip(prompt_strs, output_strs):
+        p = tokenizer.encode(prompt_str)
+        o = tokenizer.encode(output_str)
+        prompt_lens.append(len(p))
+        full_text_tokens.append(p + o)
+    max_length = max([len(f) for f in full_text_tokens])
 
-    return {k: torch.stack(v) for k, v in tokenized_data.items()}
+    input_ids = torch.full((len(prompt_strs), max_length - 1), tokenizer.pad_token_id)
+    labels = torch.full((len(prompt_strs), max_length - 1), tokenizer.pad_token_id)
+    response_mask = torch.full((len(prompt_strs), max_length - 1), False)
+    for i, (p_len, f) in enumerate(zip(prompt_lens, full_text_tokens)):
+        if len(f) < max_length:
+            input_ids[i, :len(f)] = torch.tensor(f)
+        else:
+            input_ids[i, :len(f) - 1] = torch.tensor(f[:-1])
+        labels[i, :len(f) - 1] = torch.tensor(f[1:])
+        response_mask[i, p_len - 1:len(f) - 1] = True
+    return {
+        "input_ids": input_ids,
+        "labels": labels,
+        "response_mask": response_mask,
+    }
 
 def compute_entropy(logits: torch.Tensor) -> torch.Tensor:
     """Get the entropy of the next-token predictions (i.e., entropy over the vocabulary dimension).
@@ -103,49 +93,24 @@ def compute_entropy(logits: torch.Tensor) -> torch.Tensor:
     Returns:
         torch.Tensor Shape (batch_size, sequence_length): the entropy of the next-token predictions.
     """
-    probs = F.softmax(logits, dim=-1)
-    log_probs = F.log_softmax(logits, dim=-1)
+    logits_f = logits.float()
+    probs = F.softmax(logits_f, dim=-1)
+    log_probs = F.log_softmax(logits_f, dim=-1)
     return -torch.sum(probs * log_probs, dim=-1)
 
-def get_response_log_probs(
-    model: PreTrainedModel,
-    input_ids: torch.Tensor,
-    labels: torch.Tensor,
-    return_token_entropy: bool = False,
-) -> dict[str, torch.Tensor]:
-    """Get the conditional log-probs of the response given the prompt,
-    and optionally the entropy of the next token predictions.
-    Args:
-        model: PreTrainedModel, the model to score.
-        input_ids: torch.Tensor of shape (batch_size, sequence_length):
-            the tokenized prompt and output.
-        labels: torch.Tensor of shape (batch_size, sequence_length):
-            shifted input_ids.
-        return_token_entropy: bool, whether to return the entropy of the
-            next token predictions.
-    Returns:
-        dict[str, torch.Tensor]:
-            "log_probs": torch.Tensor of shape (batch_size, sequence_length):
-                the conditional log-probs of the response given the prompt.
-            "token_entropy": Optional[torch.Tensor] of shape (batch_size, sequence_length):
-                the entropy of the next token predictions.
-    """
-    logits = model(input_ids).logits
-    #logits = logits - torch.max(logits, dim=-1, keepdim=True).values
-    #log_probs = logits - torch.logsumexp(logits, dim=-1, keepdim=True)
-    log_probs = F.log_softmax(logits, dim=-1)
-    response_log_probs = log_probs.gather(dim=-1, index=labels.unsqueeze(-1)).squeeze(-1)
+
+def get_response_log_probs(model, input_ids, labels, return_token_entropy=False):
+    logits = model(input_ids).logits              # bf16 forward OK
+    logits_f = logits.float()                     # ✅ critical
+    log_probs = F.log_softmax(logits_f, dim=-1)    # fp32
+    # if labels are pad_token_id, gather is OK; you'll mask later
+    response_log_probs = log_probs.gather(dim=-1, index=labels.unsqueeze(-1)).squeeze(-1)  # fp32
     if return_token_entropy:
         with torch.no_grad():
-            token_entropy = compute_entropy(logits)
-        return {
-            "log_probs": response_log_probs,
-            "token_entropy": token_entropy,
-        }
-    else:
-        return {
-            "log_probs": response_log_probs,
-        }
+            token_entropy = compute_entropy(logits_f)   # ✅ entropy in fp32
+        return {"log_probs": response_log_probs, "token_entropy": token_entropy}
+    return {"log_probs": response_log_probs}
+
 
 def masked_normalize(
     tensor: torch.Tensor,

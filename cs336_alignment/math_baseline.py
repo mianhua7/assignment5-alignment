@@ -58,7 +58,9 @@ if __name__ == "__main__":
     # load model from local path
     parent_dir = Path(__file__).resolve().parent.parent
     model_path = f"{parent_dir}/models/Qwen2.5-Math-1.5B"
-    vllm_model = LLM(model=model_path, trust_remote_code=True)
+    vllm_model = LLM(
+        model=model_path,
+    )
     
     # load eval sampling params
     eval_sampling_params = SamplingParams(temperature=1.0, top_p=1.0, max_tokens=1024)

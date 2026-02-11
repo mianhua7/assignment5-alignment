@@ -66,7 +66,7 @@ def main(args):
         min_tokens=4,
         stop=["</answer>"],
         include_stop_str_in_output=True,
-        seed=args.seed,
+        #seed=args.seed,
     )
     eval_sampling_params = SamplingParams(
         temperature=1.0,
@@ -80,7 +80,7 @@ def main(args):
     # initialize wandb
     wandb.init(
         project="cs336_alignment", 
-        group=f"expert_iteration_exps",
+        group=f"expert_iteration_exps_rerun_remove_sampling_seed",
         name=f"{args.ei_batch_size}_ei_batch_{args.num_rollouts}_rollouts_{args.n_sft_epochs}_sft_epochs",
         config=args,
         mode='offline',
